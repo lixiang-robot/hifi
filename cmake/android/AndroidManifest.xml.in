@@ -8,7 +8,8 @@
     android:name="org.qtproject.qt5.android.bindings.QtApplication" 
     android:label="@string/AppDisplayName" 
     android:icon="@drawable/icon"
-    android:debuggable="${ANDROID_APK_DEBUGGABLE}">
+    android:debuggable="${ANDROID_APK_DEBUGGABLE}"
+    ${ANDROID_APK_THEME}>
     
     <!-- VR MODE -->
     <meta-data android:name="com.samsung.android.vr.application.mode" android:value="vr_only"/>
@@ -19,7 +20,7 @@
       android:label="@string/AppDisplayName"
       android:screenOrientation="landscape"
       android:launchMode="singleTop"
-      ${ANDROID_APK_THEME}>
+      >
       
       <intent-filter>
         <action android:name="android.intent.action.MAIN"/>
@@ -55,7 +56,6 @@
     
     <activity 
       android:name="com.oculusvr.vrlib.PlatformActivity"
-      android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
       android:launchMode="singleTask"
       android:screenOrientation="landscape"
       android:configChanges="screenSize|orientation|keyboardHidden|keyboard">
@@ -70,6 +70,7 @@
   <uses-permission android:name="android.permission.INTERNET" />
   <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
   <uses-permission android:name="android.permission.RECORD_AUDIO" />
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
   
   <!-- camera permission required for GEAR VR passthrough camera -->
   <uses-permission android:name="android.permission.CAMERA" />
