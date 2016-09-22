@@ -26,7 +26,7 @@
 #include "../NLPacket.h"
 #include "../NLPacketList.h"
 #include "PacketList.h"
-#if defined(Q_OS_LINUX)
+#if defined(ANDROID)
 #include <sys/socket.h>
 #endif
 
