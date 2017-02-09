@@ -918,7 +918,6 @@ void ScriptEngine::run() {
             auto smallSleepUntil = clock::now() + static_cast<std::chrono::microseconds>(SMALL_SLEEP_AMOUNT);
             std::this_thread::sleep_until(smallSleepUntil);
         }
-
 #ifdef SCRIPT_DELAY_DEBUG
         {
             auto actuallySleptUntil = clock::now();
@@ -1005,6 +1004,21 @@ void ScriptEngine::run() {
     emit runningStateChanged();
     emit doneRunning();
 }
+
+quint64 ScriptEngine::getTimersRemainingTime() {
+    quint64 minimumTime = USECS_PER_SECOND; // anything larger than this can be ignored
+    QMutableHashIterator<QTimer*, CallbackData> i(_timerFunctionMap);
+    while (i.hasNext()) {
+        i.next();
+        QTimer* timer = i.key();
+        int remainingTime = timer->remainingTime();
+        if (remainingTime >= 0) {
+            minimumTime = std::min((quint64)remainingTime, minimumTime);
+        }
+    }
+    return minimumTime;
+}
+
 
 // NOTE: This is private because it must be called on the same thread that created the timers, which is why
 // we want to only call it in our own run "shutdown" processing.
@@ -1093,7 +1107,6 @@ void ScriptEngine::timerFired() {
 
     QTimer* callingTimer = reinterpret_cast<QTimer*>(sender());
     CallbackData timerData = _timerFunctionMap.value(callingTimer);
-
     if (!callingTimer->isActive()) {
         // this timer is done, we can kill it
         _timerFunctionMap.remove(callingTimer);

@@ -44,6 +44,7 @@
 
 #include "CompositorHelper.h"
 #include "Logging.h"
+#include <PathUtils.h>
 
 const char* SRGB_TO_LINEAR_FRAG = R"SCRIBE(
 
@@ -174,6 +175,7 @@ public:
 #elif defined(Q_OS_MAC)
                             GLint interval = wantVsync ? 1 : 0;
                             newPlugin->swapBuffers();
+
                             CGLSetParameter(CGLGetCurrentContext(), kCGLCPSwapInterval, &interval);
                             newPlugin->swapBuffers();
                             CGLGetParameter(CGLGetCurrentContext(), kCGLCPSwapInterval, &interval);
@@ -740,13 +742,12 @@ gpu::gl::GLBackend* OpenGLDisplayPlugin::getGLBackend() {
         return nullptr;
     }
     auto backend = _gpuContext->getBackend().get();
-#if defined(Q_OS_MAC)
+#if defined(Q_OS_MAC) || defined(ANDROID)
     // Should be dynamic_cast, but that doesn't work in plugins on OSX
     auto glbackend = static_cast<gpu::gl::GLBackend*>(backend);
 #else
     auto glbackend = dynamic_cast<gpu::gl::GLBackend*>(backend);
 #endif
-
     return glbackend;
 }
 

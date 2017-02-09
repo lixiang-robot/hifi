@@ -126,6 +126,7 @@ protected:
     gpu::PipelinePointer _simplePipeline;
     gpu::PipelinePointer _presentPipeline;
     gpu::PipelinePointer _cursorPipeline;
+    
     float _compositeOverlayAlpha { 1.0f };
 
     struct CursorData {

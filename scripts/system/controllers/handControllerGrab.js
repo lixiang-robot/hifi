@@ -820,11 +820,6 @@ function MyController(hand) {
     this.update = function(deltaTime, timestamp) {
         this.updateSmoothedTrigger();
 
-        //  If both trigger and grip buttons squeezed and nothing is held, rescale my avatar!
-        if (this.hand === RIGHT_HAND && this.state === STATE_SEARCHING && this.getOtherHandController().state === STATE_SEARCHING) {
-            this.maybeScaleMyAvatar();
-        }
-
         if (this.ignoreInput()) {
             this.turnOffVisualizations();
             return;
@@ -1063,6 +1058,9 @@ function MyController(hand) {
 
     this.secondaryPress = function(value) {
         _this.rawSecondaryValue = value;
+        if (value > 0) {
+            _this.release();
+        }
     };
 
     this.updateSmoothedTrigger = function() {

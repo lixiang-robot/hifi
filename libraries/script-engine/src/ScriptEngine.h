@@ -218,6 +218,7 @@ protected:
     void init();
 
     bool evaluatePending() const { return _evaluatesPending > 0; }
+    quint64 getTimersRemainingTime();
     void timerFired();
     void stopAllTimers();
     void stopAllTimersForEntityScript(const EntityItemID& entityID);

@@ -10,6 +10,12 @@
 
 (function() { // BEGIN LOCAL_SCOPE
 
+var logEnabled = false;
+function printd(str) {
+    if (logEnabled)
+        print("teleport.js " + str);
+}
+
 var inTeleportMode = false;
 
 var SMOOTH_ARRIVAL_SPACING = 33;
@@ -107,14 +113,12 @@ function Teleporter() {
     };
 
     this.enterTeleportMode = function(hand) {
-
         if (inTeleportMode === true) {
             return;
         }
         if (isDisabled === 'both') {
             return;
         }
-
         inTeleportMode = true;
         this.inCoolIn = true;
         if (coolInTimeout !== null) {
@@ -725,9 +729,8 @@ function registerMappings() {
             if (isMoving() === true) {
                 return;
             }
-
             activationTimeout = Script.setTimeout(function() {
-                teleporter.enterTeleportMode('right')
+                teleporter.enterTeleportMode('right');
                 Script.clearTimeout(activationTimeout);
                 activationTimeout = null;
             }, TELEPORT_DELAY)
