@@ -34,7 +34,9 @@
 #include <QtQml/QQmlEngine>
 #include <QtQuick/QQuickWindow>
 
+#ifndef ANDROID
 #include <QtWebEngineWidgets/QWebEngineProfile>
+#endif
 
 #include <QtWidgets/QDesktopWidget>
 #include <QtWidgets/QMessageBox>
@@ -68,6 +70,7 @@
 #include <ErrorDialog.h>
 #include <FileScriptingInterface.h>
 #include <Finally.h>
+#include <FingerprintUtils.h>
 #include <FramebufferCache.h>
 #include <gpu/Batch.h>
 #include <gpu/Context.h>
@@ -113,6 +116,9 @@
 #include <ScriptEngines.h>
 #include <ScriptCache.h>
 #include <SoundCache.h>
+#ifndef ANDROID
+#include <steamworks-wrapper/SteamClient.h>
+#endif
 #include <TabletScriptingInterface.h>
 #include <Tooltip.h>
 #include <udt/PacketHeaders.h>
@@ -225,7 +231,7 @@ static const QString INFO_HELP_PATH = "html/help.html";
 static const unsigned int THROTTLED_SIM_FRAMERATE = 15;
 static const int THROTTLED_SIM_FRAME_PERIOD_MS = MSECS_PER_SECOND / THROTTLED_SIM_FRAMERATE;
 
-static const uint32_t INVALID_FRAME = UINT32_MAX;
+static const uint32_t INVALID_FRAME = std::numeric_limits<std::uint32_t>::max();
 
 static const float PHYSICS_READY_RANGE = 3.0f; // how far from avatar to check for entities that aren't ready for simulation
 
@@ -399,7 +405,7 @@ public:
 };
 
 void messageHandler(QtMsgType type, const QMessageLogContext& context, const QString& message) {
-    QString logMessage = LogHandler::getInstance().printMessage((LogMsgType) type, context, message);
+    /*QString logMessage = LogHandler::getInstance().printMessage((LogMsgType) type, context, message);
 
     if (!logMessage.isEmpty()) {
 #ifdef Q_OS_WIN
@@ -407,7 +413,7 @@ void messageHandler(QtMsgType type, const QMessageLogContext& context, const QSt
         OutputDebugStringA("\n");
 #endif
         qApp->getLogger()->addMessage(qPrintable(logMessage + "\n"));
-    }
+    }*/
 }
 
 static const QString STATE_IN_HMD = "InHMD";
@@ -426,12 +432,15 @@ bool setupEssentials(int& argc, char** argv) {
     const char* portStr = getCmdOption(argc, constArgv, "--listenPort");
     const int listenPort = portStr ? atoi(portStr) : INVALID_PORT;
 
+    DependencyManager::set<tracing::Tracer>();
     Setting::init();
-
+#ifndef ANDROID
     if (auto steamClient = PluginManager::getInstance()->getSteamClientPlugin()) {
         steamClient->init();
     }
+#endif
 
+    qDebug() << "setupEssentials " << DependencyManager::get<tracing::Tracer>();
     DependencyManager::set<tracing::Tracer>();
     PROFILE_SET_THREAD_NAME("Main Thread");
 
@@ -454,7 +463,6 @@ bool setupEssentials(int& argc, char** argv) {
     DependencyManager::registerInheritance<AvatarHashMap, AvatarManager>();
     DependencyManager::registerInheritance<EntityActionFactoryInterface, InterfaceActionFactory>();
     DependencyManager::registerInheritance<SpatialParentFinder, InterfaceParentFinder>();
-
     // Set dependencies
     DependencyManager::set<AccountManager>(std::bind(&Application::getUserAgent, qApp));
     DependencyManager::set<StatTracker>();
@@ -580,7 +588,23 @@ Application::Application(int& argc, char** argv, QElapsedTimer& startupTimer, bo
     _maxOctreePPS(maxOctreePacketsPerSecond.get()),
     _lastFaceTrackerUpdate(0)
 {
-    auto steamClient = PluginManager::getInstance()->getSteamClientPlugin();
+#ifdef ANDROID
+    QLoggingCategory::setFilterRules("trace.*=false\ntrace.render=true\ntrace.render_gpu_gl=true\ntrace.render.details=true\ntrace.render_gpu_gl.details=true\ntrace.render_gpu=true\ntrace.render_gpu.details=true\ntrace.render_detail=true");
+    //QLoggingCategory::setFilterRules("trace.*=false\ntrace.render=true\ntrace.render_gpu_gl=true");
+    QFile scriptsDest(defaultScriptsLocation().toString());
+    if (!scriptsDest.exists()) {
+        qDebug() << "Copying scripts dir";
+        copyDirDeep("assets:/scripts", defaultScriptsLocation().toLocalFile());
+    }
+    qDebug() << "Resources path " << PathUtils::resourcesPath();
+    QFile resourcesDest(PathUtils::resourcesPath());
+    if (!resourcesDest.exists()) {
+        qDebug() << "Copying resources dir";
+        copyDirDeep("assets:/resources", PathUtils::resourcesPath());
+    }
+    DependencyManager::get<tracing::Tracer>()->startTracing();
+#else
+        auto steamClient = PluginManager::getInstance()->getSteamClientPlugin();
     setProperty(hifi::properties::STEAM, (steamClient && steamClient->isRunning()));
     setProperty(hifi::properties::CRASHED, _previousSessionCrashed);
 
@@ -601,6 +625,8 @@ Application::Application(int& argc, char** argv, QElapsedTimer& startupTimer, bo
             }
         }
     }
+#endif
+
 
     // make sure the debug draw singleton is initialized on the main thread.
     DebugDraw::getInstance().removeMarker("");
@@ -626,9 +652,8 @@ Application::Application(int& argc, char** argv, QElapsedTimer& startupTimer, bo
 #endif
 
     _logger = new FileLogger(this);  // After setting organization name in order to get correct directory
-
-    qInstallMessageHandler(messageHandler);
-
+    qDebug() << "TODO: Application.cpp:Application TODO restore this and check why it crashes!";
+    //qInstallMessageHandler(messageHandler); TODO restore this and check why it crashes!
     QFontDatabase::addApplicationFont(PathUtils::resourcesPath() + "styles/Inconsolata.otf");
     _window->setWindowTitle("Interface");
 
@@ -640,9 +665,11 @@ Application::Application(int& argc, char** argv, QElapsedTimer& startupTimer, bo
     _deadlockWatchdogThread = new DeadlockWatchdogThread();
     _deadlockWatchdogThread->start();
 
+#ifndef ANDROID
     if (steamClient) {
         qCDebug(interfaceapp) << "[VERSION] SteamVR buildID:" << steamClient->getSteamVRBuildID();
     }
+#endif
     qCDebug(interfaceapp) << "[VERSION] Build sequence:" << qPrintable(applicationVersion());
     qCDebug(interfaceapp) << "[VERSION] MODIFIED_ORGANIZATION:" << BuildInfo::MODIFIED_ORGANIZATION;
     qCDebug(interfaceapp) << "[VERSION] VERSION:" << BuildInfo::VERSION;
@@ -674,7 +701,10 @@ Application::Application(int& argc, char** argv, QElapsedTimer& startupTimer, bo
         qCDebug(interfaceapp) << "Home sandbox does not appear to be running....";
         if (wantsSandboxRunning) {
             QString contentPath = getRunServerPath();
+
+#ifndef ANDROID
             SandboxUtils::runLocalSandbox(contentPath, true, RUNNING_MARKER_FILENAME, noUpdater);
+#endif
             sandboxIsRunning = true;
         }
         determinedSandboxState = true;
@@ -888,7 +918,8 @@ Application::Application(int& argc, char** argv, QElapsedTimer& startupTimer, bo
     if (!success) {
         concurrentDownloads = MAX_CONCURRENT_RESOURCE_DOWNLOADS;
     }
-    ResourceCache::setRequestLimit(concurrentDownloads);
+    qDebug() << "TODO: Application::Application calling the ResourceCache (and inside, DependencyManager has no obj!) makes it crash, analyze";
+    //ResourceCache::setRequestLimit(concurrentDownloads);
 
     _glWidget = new GLCanvas();
     getApplicationCompositor().setRenderingWidget(_glWidget);
@@ -991,6 +1022,7 @@ Application::Application(int& argc, char** argv, QElapsedTimer& startupTimer, bo
         this, &Application::checkSkeleton, Qt::QueuedConnection);
 
     // Setup the userInputMapper with the actions
+    
     auto userInputMapper = DependencyManager::get<UserInputMapper>();
     connect(userInputMapper.data(), &UserInputMapper::actionEvent, [this](int action, float state) {
         using namespace controller;
@@ -1069,12 +1101,15 @@ Application::Application(int& argc, char** argv, QElapsedTimer& startupTimer, bo
 
         if (action == controller::toInt(controller::Action::RETICLE_CLICK)) {
             auto reticlePos = getApplicationCompositor().getReticlePosition();
+            //qDebug() << "[CONTROLLER-2] handcontrollerpointer Application action was controller::Action::RETICLE_CLICK " << reticlePos.x << "," << reticlePos.y << " state: " << state;
             QPoint localPos(reticlePos.x, reticlePos.y); // both hmd and desktop already handle this in our coordinates.
             if (state) {
+                //qDebug() << "[CONTROLLER-2] handcontrollerpointer Application::Application RETICLE_CLICK sending event mousePress to " << _glWidget;
                 QMouseEvent mousePress(QEvent::MouseButtonPress, localPos, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
                 sendEvent(_glWidget, &mousePress);
                 _reticleClickPressed = true;
             } else {
+                //qDebug() << "[CONTROLLER-2] handcontrollerpointer Application::Application RETICLE_CLICK sending event mouseRelease";
                 QMouseEvent mouseRelease(QEvent::MouseButtonRelease, localPos, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
                 sendEvent(_glWidget, &mouseRelease);
                 _reticleClickPressed = false;
@@ -1136,11 +1171,13 @@ Application::Application(int& argc, char** argv, QElapsedTimer& startupTimer, bo
     });
 
     // Setup the _keyboardMouseDevice, _touchscreenDevice and the user input mapper with the default bindings
+#ifndef ANDROID
     userInputMapper->registerDevice(_keyboardMouseDevice->getInputDevice());
-    // if the _touchscreenDevice is not supported it will not be registered
     if (_touchscreenDevice) {
         userInputMapper->registerDevice(_touchscreenDevice->getInputDevice());
     }
+#endif
+    // if the _touchscreenDevice is not supported it will not be registered
 
     // force the model the look at the correct directory (weird order of operations issue)
     scriptEngines->setScriptsLocation(scriptEngines->getScriptsLocation());
@@ -1148,14 +1185,13 @@ Application::Application(int& argc, char** argv, QElapsedTimer& startupTimer, bo
     scriptEngines->loadScripts();
     // Make sure we don't time out during slow operations at startup
     updateHeartbeat();
-
     loadSettings();
 
     // Now that we've loaded the menu and thus switched to the previous display plugin
     // we can unlock the desktop repositioning code, since all the positions will be
     // relative to the desktop size for this plugin
     auto offscreenUi = DependencyManager::get<OffscreenUi>();
-    offscreenUi->getDesktop()->setProperty("repositionLocked", false);
+    //offscreenUi->getDesktop()->setProperty("repositionLocked", false);
 
     // Make sure we don't time out during slow operations at startup
     updateHeartbeat();
@@ -1166,8 +1202,7 @@ Application::Application(int& argc, char** argv, QElapsedTimer& startupTimer, bo
     connect(&_settingsThread, SIGNAL(finished()), &_settingsTimer, SLOT(stop()));
     _settingsTimer.moveToThread(&_settingsThread);
     _settingsTimer.setSingleShot(false);
-    _settingsTimer.setInterval(SAVE_SETTINGS_INTERVAL); // 10s, Qt::CoarseTimer acceptable
-    _settingsThread.setPriority(QThread::LowestPriority);
+    _settingsTimer.setInterval(SAVE_SETTINGS_INTERVAL);
     _settingsThread.start();
 
     if (Menu::getInstance()->isOptionChecked(MenuOption::FirstPerson)) {
@@ -1206,13 +1241,14 @@ Application::Application(int& argc, char** argv, QElapsedTimer& startupTimer, bo
     setActiveEyeTracker();
 #endif
 
+#ifndef ANDROID
     // If launched from Steam, let it handle updates
     if (!noUpdater) {
         auto applicationUpdater = DependencyManager::get<AutoUpdater>();
         connect(applicationUpdater.data(), &AutoUpdater::newVersionIsAvailable, dialogsManager.data(), &DialogsManager::showUpdateDialog);
         applicationUpdater->checkForUpdate();
     }
-
+#endif
     // Now that menu is initialized we can sync myAvatar with it's state.
     myAvatar->updateMotionBehaviorFromMenu();
 
@@ -1281,6 +1317,24 @@ Application::Application(int& argc, char** argv, QElapsedTimer& startupTimer, bo
     static glm::mat4 lastHMDHeadPose = getHMDSensorPose();
     static controller::Pose lastLeftHandPose = myAvatar->getLeftHandPose();
     static controller::Pose lastRightHandPose = myAvatar->getRightHandPose();
+
+#ifdef ANDROID
+    QTimer* saveProfilingTimer = new QTimer(this);
+    saveProfilingTimer->setInterval(20 * 1000);
+    connect(saveProfilingTimer, &QTimer::timeout, this, [this]() {
+        auto tracer = DependencyManager::get<tracing::Tracer>();
+        static int cnt=0;
+        if (cnt < 1) {
+        qDebug() << "[PROFILING] Tracer " << tracer;
+        cnt++;
+        auto outputFile =  QString("/storage/emulated/0/profile_%1.json.gz").arg(cnt);
+        qDebug() << "[PROFILING] serialize profiling";
+        tracer->serialize(outputFile);
+        qDebug() << "[PROFILING] serialize profiling end " << outputFile;
+        }
+    });
+    saveProfilingTimer->start();
+#endif
 
     // Periodically send fps as a user activity event
     QTimer* sendStatsTimer = new QTimer(this);
@@ -1494,6 +1548,10 @@ Application::Application(int& argc, char** argv, QElapsedTimer& startupTimer, bo
 
         const QString TUTORIAL_PATH = "/tutorial_begin";
 
+#ifdef ANDROID
+    //DependencyManager::get<AddressManager>()->handleLookupString("hifi://android/0.0,0.0,-200");
+    DependencyManager::get<AddressManager>()->handleLookupString("dev-mobile.highfidelity.io/0.257461,0,-5.11505");
+#else
         if (shouldGoToTutorial) {
             if (sandboxIsRunning) {
                 qCDebug(interfaceapp) << "Home sandbox appears to be running, going to Home.";
@@ -1517,31 +1575,30 @@ Application::Application(int& argc, char** argv, QElapsedTimer& startupTimer, bo
                 showHelp();
             }
 
-            // If this is a first run we short-circuit the address passed in
-            if (isFirstRun) {
-                if (hasHMDAndHandControllers) {
-                    if (sandboxIsRunning) {
-                        qCDebug(interfaceapp) << "Home sandbox appears to be running, going to Home.";
-                        DependencyManager::get<AddressManager>()->goToLocalSandbox();
-                    } else {
-                        qCDebug(interfaceapp) << "Home sandbox does not appear to be running, going to Entry.";
-                        DependencyManager::get<AddressManager>()->goToEntry();
-                    }
+        // If this is a first run we short-circuit the address passed in
+        if (isFirstRun) {
+            if (hasHMDAndHandControllers) {
+                if(sandboxIsRunning) {
+                    qCDebug(interfaceapp) << "Home sandbox appears to be running, going to Home.";
+                    DependencyManager::get<AddressManager>()->goToLocalSandbox();
                 } else {
+                    qCDebug(interfaceapp) << "Home sandbox does not appear to be running, going to Entry.";
                     DependencyManager::get<AddressManager>()->goToEntry();
                 }
             } else {
-                qCDebug(interfaceapp) << "Not first run... going to" << qPrintable(addressLookupString.isEmpty() ? QString("previous location") : addressLookupString);
-                DependencyManager::get<AddressManager>()->loadSettings(addressLookupString);
+                DependencyManager::get<AddressManager>()->goToEntry();
             }
+        } else {
+            qCDebug(interfaceapp) << "Not first run... going to" << qPrintable(addressLookupString.isEmpty() ? QString("previous location") : addressLookupString);
+            DependencyManager::get<AddressManager>()->loadSettings(addressLookupString);
         }
-
-        _connectionMonitor.init();
-
-        // After all of the constructor is completed, then set firstRun to false.
-        firstRun.set(false);
     }
+#endif
+    _connectionMonitor.init();
 
+    // After all of the constructor is completed, then set firstRun to false.
+    firstRun.set(false);
+}
     // Monitor model assets (e.g., from Clara.io) added to the world that may need resizing.
     static const int ADD_ASSET_TO_WORLD_TIMER_INTERVAL_MS = 1000;
     _addAssetToWorldResizeTimer.setInterval(ADD_ASSET_TO_WORLD_TIMER_INTERVAL_MS); // 1s, Qt::CoarseTimer acceptable
@@ -1870,11 +1927,15 @@ void Application::initializeGL() {
     const auto items = _renderEngine->addJob<RenderFetchCullSortTask>("FetchCullSort", cullFunctor);
     assert(items.canCast<RenderFetchCullSortTask::Output>());
     static const QString RENDER_FORWARD = "HIFI_RENDER_FORWARD";
+#ifndef ANDROID    
     if (QProcessEnvironment::systemEnvironment().contains(RENDER_FORWARD)) {
         _renderEngine->addJob<RenderForwardTask>("Forward", items.get<RenderFetchCullSortTask::Output>());
     } else {
         _renderEngine->addJob<RenderDeferredTask>("RenderDeferredTask", items.get<RenderFetchCullSortTask::Output>());
     }
+#else
+        _renderEngine->addJob<RenderForwardTask>("Forward", items.get<RenderFetchCullSortTask::Output>());
+#endif
     _renderEngine->load();
     _renderEngine->registerScene(_main3DScene);
 
@@ -1923,8 +1984,9 @@ void Application::initializeUi() {
     UpdateDialog::registerType();
     qmlRegisterType<Preference>("Hifi", 1, 0, "Preference");
 
+#ifndef ANDROID
     qmlRegisterType<HFWebEngineProfile>("HFWebEngineProfile", 1, 0, "HFWebEngineProfile");
-
+#endif
     auto offscreenUi = DependencyManager::get<OffscreenUi>();
     offscreenUi->create(_glWidget->qglContext());
 
@@ -1934,8 +1996,11 @@ void Application::initializeUi() {
     offscreenUi->setBaseUrl(QUrl::fromLocalFile(PathUtils::resourcesPath() + "/qml/"));
     // OffscreenUi is a subclass of OffscreenQmlSurface specifically designed to
     // support the window management and scripting proxies for VR use
+#ifndef ANDROID
     offscreenUi->createDesktop(QString("hifi/Desktop.qml"));
-
+#else
+    offscreenUi->createDesktop(QString("hifi/Android.qml"));
+#endif
     // FIXME either expose so that dialogs can set this themselves or
     // do better detection in the offscreen UI of what has focus
     offscreenUi->setNavigationFocused(false);
@@ -2012,10 +2077,11 @@ void Application::initializeUi() {
     rootContext->setContextProperty("Reticle", getApplicationCompositor().getReticleInterface());
 
     rootContext->setContextProperty("ApplicationCompositor", &getApplicationCompositor());
-
+#ifndef ANDROID
     if (auto steamClient = PluginManager::getInstance()->getSteamClientPlugin()) {
         rootContext->setContextProperty("Steam", new SteamScriptingInterface(engine, steamClient.get()));
     }
+#endif
 
 
     _glWidget->installEventFilter(offscreenUi.data());
@@ -2023,7 +2089,9 @@ void Application::initializeUi() {
         QPointF result = pt;
         auto displayPlugin = getActiveDisplayPlugin();
         if (displayPlugin->isHmd()) {
+#ifndef ANDROID
             getApplicationCompositor().handleRealMouseMoveEvent(false);
+#endif
             auto resultVec = getApplicationCompositor().getReticlePosition();
             result = QPointF(resultVec.x, resultVec.y);
         }
@@ -2037,9 +2105,11 @@ void Application::initializeUi() {
     // This will set up the input plugins UI
     _activeInputPlugins.clear();
     foreach(auto inputPlugin, PluginManager::getInstance()->getInputPlugins()) {
+#ifndef ANDROID
         if (KeyboardMouseDevice::NAME == inputPlugin->getName()) {
             _keyboardMouseDevice = std::dynamic_pointer_cast<KeyboardMouseDevice>(inputPlugin);
         }
+#endif
         if (TouchscreenDevice::NAME == inputPlugin->getName()) {
             _touchscreenDevice = std::dynamic_pointer_cast<TouchscreenDevice>(inputPlugin);
         }
@@ -2231,6 +2301,11 @@ void Application::paintGL() {
     // Final framebuffer that will be handled to the display-plugin
     auto finalFramebuffer = framebufferCache->getFramebuffer();
 
+    for (auto e : getMyAvatar()->getSkeletonModel()->getRenderItems().keys()) {
+        qDebug() << "[DEBUG-AVATAR] " << e << "," << getMyAvatar()->getSkeletonModel()->getRenderItems().value(e)->getShapeKey();
+    }
+
+
     {
         PROFILE_RANGE(render, "/mainRender");
         PerformanceTimer perfTimer("mainRender");
@@ -2275,8 +2350,147 @@ void Application::paintGL() {
             renderArgs._context->setStereoViews(eyeOffsets);
         }
         renderArgs._blitFramebuffer = finalFramebuffer;
+
+/*
+        static gpu::PipelinePointer thePipeline;
+        static std::once_flag once;
+        static gpu::BufferView vertices(new gpu::Buffer(), gpu::Element(gpu::VEC3, gpu::FLOAT, gpu::XYZ));
+        static gpu::BufferView indices(new gpu::Buffer(), gpu::Element(gpu::SCALAR, gpu::UINT32, gpu::INDEX));
+        static gpu::Stream::FormatPointer cubeBufferFormat;
+
+        std::call_once(once, [&] {
+            {
+                qDebug() << "Building Cube shader program";
+                auto cubeVS = gpu::Shader::createVertex(std::string(Cube_vert));
+                auto cubeFS = gpu::Shader::createPixel(std::string(Cube_frag));
+                auto cubeShader = gpu::Shader::createProgram(cubeVS, cubeFS);
+
+                gpu::Shader::BindingSet bindings;
+                bindings.insert(gpu::Shader::Binding(std::string("transform"), 0));
+                //bindings.insert(gpu::Shader::Binding(std::string("skyboxBuffer"), SKYBOX_CONSTANTS_SLOT));
+                if (!gpu::Shader::makeProgram(*cubeShader, bindings)) {
+                    qDebug() << "[CUBE] error creating shader program!!!";
+                }
+
+                   GLfloat _vertices[] = {
+                        -0.5f, -0.5f, -0.5f, 0.0f, 0.0f,
+                        0.5f, -0.5f, -0.5f, 1.0f, 0.0f,
+                        0.5f,  0.5f, -0.5f, 1.0f, 1.0f,
+                        0.5f,  0.5f, -0.5f, 1.0f, 1.0f,
+                        -0.5f,  0.5f, -0.5f, 0.0f, 1.0f,
+                        -0.5f, -0.5f, -0.5f, 0.0f, 0.0f,
+                        
+                        -0.5f, -0.5f,  0.5f, 0.0f, 0.0f,
+                        0.5f, -0.5f,  0.5f, 1.0f, 0.0f,
+                        0.5f,  0.5f,  0.5f, 1.0f, 1.0f,
+                        0.5f,  0.5f,  0.5f, 1.0f, 1.0f,
+                        -0.5f,  0.5f,  0.5f, 0.0f, 1.0f,
+                        -0.5f, -0.5f,  0.5f, 0.0f, 0.0f,
+                        
+                        -0.5f,  0.5f,  0.5f, 1.0f, 0.0f,
+                        -0.5f,  0.5f, -0.5f, 1.0f, 1.0f,
+                        -0.5f, -0.5f, -0.5f, 0.0f, 1.0f,
+                        -0.5f, -0.5f, -0.5f, 0.0f, 1.0f,
+                        -0.5f, -0.5f,  0.5f, 0.0f, 0.0f,
+                        -0.5f,  0.5f,  0.5f, 1.0f, 0.0f,
+                        
+                        0.5f,  0.5f,  0.5f, 1.0f, 0.0f,
+                        0.5f,  0.5f, -0.5f, 1.0f, 1.0f,
+                        0.5f, -0.5f, -0.5f, 0.0f, 1.0f,
+                        0.5f, -0.5f, -0.5f, 0.0f, 1.0f,
+                        0.5f, -0.5f,  0.5f, 0.0f, 0.0f,
+                        0.5f,  0.5f,  0.5f, 1.0f, 0.0f,
+                        
+                        -0.5f, -0.5f, -0.5f, 0.0f, 1.0f,
+                        0.5f, -0.5f, -0.5f, 1.0f, 1.0f,
+                        0.5f, -0.5f,  0.5f, 1.0f, 0.0f,
+                        0.5f, -0.5f,  0.5f, 1.0f, 0.0f,
+                        -0.5f, -0.5f,  0.5f, 0.0f, 0.0f,
+                        -0.5f, -0.5f, -0.5f, 0.0f, 1.0f,
+                        
+                        -0.5f,  0.5f, -0.5f, 0.0f, 1.0f,
+                        0.5f,  0.5f, -0.5f, 1.0f, 1.0f,
+                        0.5f,  0.5f,  0.5f, 1.0f, 0.0f,
+                        0.5f,  0.5f,  0.5f, 1.0f, 0.0f,
+                        -0.5f,  0.5f,  0.5f, 0.0f, 0.0f,
+                        -0.5f,  0.5f, -0.5f, 0.0f, 1.0f
+                    };
+
+                int verticesSize = sizeof(GLfloat) * 5 * 36;
+                vertices._buffer->append(verticesSize, reinterpret_cast<const gpu::Byte*>(&_vertices));
+
+                cubeBufferFormat.reset(new gpu::Stream::Format());
+                cubeBufferFormat->setAttribute(gpu::Stream::POSITION, 0, gpu::Element(gpu::VEC3, gpu::FLOAT, gpu::XYZ), 0);
+                cubeBufferFormat->setAttribute(gpu::Stream::TEXCOORD, 0, gpu::Element(gpu::VEC2, gpu::FLOAT, gpu::UV), 3 * sizeof(GLfloat));
+                //int indicesSize = sizeof(GLuint) * 6;
+                //indices._buffer->append(indicesSize, reinterpret_cast<const gpu::Byte*>(&_indices));
+                auto cubeState = std::make_shared<gpu::State>();
+                cubeState->setDepthTest(gpu::State::DepthTest(true));
+                cubeState->setCullMode(gpu::State::CULL_NONE);
+                thePipeline = gpu::Pipeline::create(cubeShader, cubeState);
+                qDebug() << "Cube pipeline built";
+            }
+        });
+
+        static int numFrame=1024;
+        numFrame++;
+        static GLfloat _translation[] = {
+                        0.0f,0.0f,2.0f,
+                        0.0f,0.0f,4.0f,
+                        0.0f,-2.0f,2.0f,
+                        0.0f,-4.0f,2.0f,
+                        2.0f,0.0f,2.0f,
+                        -2.0f,0.0f,2.0f,
+                        3.0f,0.0f,-3.0f,
+                        1.0f,4.0f,2.0f,
+                        -1.0f,-3.0f,-2.0f,
+                        1.0f,4.0f,2.0f
+                };
+
+        static auto iconMapPath = PathUtils::resourcesPath() +"images/container.jpg";
+        static auto statusIconMap = DependencyManager::get<TextureCache>()->getImageTexture(iconMapPath);
+
+        for (int iCube=0; iCube < 1; iCube++) {
+            gpu::Batch batch;
+            batch.enableStereo(true);
+            glm::mat4 projMat;
+            _displayViewFrustum.evalProjectionMatrix(projMat);
+            Transform viewTransform;
+            _displayViewFrustum.evalViewTransform(viewTransform);
+            if (getMyAvatar() != nullptr) {
+                viewTransform.setTranslation(-getMyAvatar()->getPosition());
+            } else {
+                viewTransform.setTranslation(vec3(0.0, 0.0, 0.0));
+            }
+
+            batch.setProjectionTransform(projMat);
+            batch.setFramebuffer(finalFramebuffer);
+            batch.setViewTransform(viewTransform);
+            batch.setPipeline(thePipeline);
+            batch.setInputFormat(cubeBufferFormat);
+            batch.setInputBuffer(0, vertices._buffer, 0, sizeof(GLfloat) * 5);
+            batch.setResourceTexture(0, statusIconMap);
+
+            glm::mat4 modelTransform;
+            modelTransform = glm::translate(modelTransform, vec3(_translation[3*iCube], _translation[3*iCube+1], _translation[3*iCube+2]));
+            //modelTransform = glm::rotate(modelTransform, glm::radians(iCube*numFrame*1.0f), vec3(0.0f,0.0f,1.0f));
+
+            batch.setModelTransform(modelTransform);
+            if (iCube == 0) {
+                batch.clearFramebuffer(gpu::Framebuffer::BUFFER_COLORS | gpu::Framebuffer::BUFFER_DEPTH, glm::vec4(0.16, 0.47, 0.73, 1.0), 1000.0f, 0, true);
+            }
+            batch.draw(gpu::TRIANGLES, 36); // 36
+            batch._debugBatch = true;
+            renderArgs._context->appendFrameBatch(batch);
+
+        }
+*/
+
+
+
         displaySide(&renderArgs, _myCamera);
-    }
+
+    } // paintGL
 
     auto frame = _gpuContext->endFrame();
     frame->frameIndex = _frameCount;
@@ -2291,6 +2505,17 @@ void Application::paintGL() {
         PerformanceTimer perfTimer("pluginOutput");
         _frameCounter.increment();
         displayPlugin->submitFrame(frame);
+
+        static int submitFrameCounter = 0;
+        static long tsSec = 0L;
+        long currentSec = static_cast<long int> (std::time(nullptr));
+        if (tsSec != currentSec) {
+            qDebug() << "[RENDER-METRIC] Frame rate: " << submitFrameCounter << " fps";
+            submitFrameCounter = 0;
+            tsSec = currentSec;
+        }
+        submitFrameCounter++;
+
     }
 
     // Reset the framebuffer and stereo state
@@ -3038,6 +3263,7 @@ void Application::focusOutEvent(QFocusEvent* event) {
 }
 
 void Application::maybeToggleMenuVisible(QMouseEvent* event) const {
+#ifndef ANDROID
 #ifndef Q_OS_MAC
     // If in full screen, and our main windows menu bar is hidden, and we're close to the top of the QMainWindow
     // then show the menubar.
@@ -3056,6 +3282,7 @@ void Application::maybeToggleMenuVisible(QMouseEvent* event) const {
             }
         }
     }
+#endif
 #endif
 }
 
@@ -3079,6 +3306,7 @@ void Application::mouseMoveEvent(QMouseEvent* event) {
     auto offscreenUi = DependencyManager::get<OffscreenUi>();
     auto eventPosition = compositor.getMouseEventPosition(event);
     QPointF transformedPos = offscreenUi->mapToVirtualScreen(eventPosition, _glWidget);
+    qDebug() << "[CONTROLLER-2] Mousemove to " << eventPosition << " mapped to vs: " << transformedPos;
     auto button = event->button();
     auto buttons = event->buttons();
     // Determine if the ReticleClick Action is 1 and if so, fake include the LeftMouseButton
@@ -3099,20 +3327,21 @@ void Application::mouseMoveEvent(QMouseEvent* event) {
         getOverlays().mouseMoveEvent(&mappedEvent);
         getEntities()->mouseMoveEvent(&mappedEvent);
     }
-
     _controllerScriptingInterface->emitMouseMoveEvent(&mappedEvent); // send events to any registered scripts
-
+    qDebug() << "Controller mouseMoveEvent isMouseCaptured?";
     // if one of our scripts have asked to capture this event, then stop processing it
     if (_controllerScriptingInterface->isMouseCaptured()) {
+        qDebug() << "[CONTROLLER-2] Mousemove XXXXX to " << eventPosition << " mapped to vs: " << transformedPos;
         return;
     }
 
-    if (_keyboardMouseDevice->isActive()) {
+    if (_keyboardMouseDevice && _keyboardMouseDevice->isActive()) {
         _keyboardMouseDevice->mouseMoveEvent(event);
     }
 }
 
 void Application::mousePressEvent(QMouseEvent* event) {
+    qDebug() << "[CONTROLLER-2] anddb-handControllerPointer.js Application::mousePressEvent";
     // Inhibit the menu if the user is using alt-mouse dragging
     _altPressed = false;
 
@@ -3145,7 +3374,7 @@ void Application::mousePressEvent(QMouseEvent* event) {
     }
 
     if (hasFocus()) {
-        if (_keyboardMouseDevice->isActive()) {
+        if (_keyboardMouseDevice && _keyboardMouseDevice->isActive()) {
             _keyboardMouseDevice->mousePressEvent(event);
         }
 
@@ -3206,7 +3435,7 @@ void Application::mouseReleaseEvent(QMouseEvent* event) {
     }
 
     if (hasFocus()) {
-        if (_keyboardMouseDevice->isActive()) {
+        if (_keyboardMouseDevice && _keyboardMouseDevice->isActive()) {
             _keyboardMouseDevice->mouseReleaseEvent(event);
         }
 
@@ -3233,7 +3462,7 @@ void Application::touchUpdateEvent(QTouchEvent* event) {
         return;
     }
 
-    if (_keyboardMouseDevice->isActive()) {
+    if (_keyboardMouseDevice && _keyboardMouseDevice->isActive()) {
         _keyboardMouseDevice->touchUpdateEvent(event);
     }
     if (_touchscreenDevice && _touchscreenDevice->isActive()) {
@@ -3254,7 +3483,7 @@ void Application::touchBeginEvent(QTouchEvent* event) {
         return;
     }
 
-    if (_keyboardMouseDevice->isActive()) {
+    if (_keyboardMouseDevice && _keyboardMouseDevice->isActive()) {
         _keyboardMouseDevice->touchBeginEvent(event);
     }
     if (_touchscreenDevice && _touchscreenDevice->isActive()) {
@@ -3269,12 +3498,15 @@ void Application::touchEndEvent(QTouchEvent* event) {
     _controllerScriptingInterface->emitTouchEndEvent(thisEvent); // send events to any registered scripts
     _lastTouchEvent = thisEvent;
 
+#ifdef ANDROID
+    setFullscreen(nullptr);
+#endif
     // if one of our scripts have asked to capture this event, then stop processing it
     if (_controllerScriptingInterface->isTouchCaptured()) {
         return;
     }
 
-    if (_keyboardMouseDevice->isActive()) {
+    if (_keyboardMouseDevice && _keyboardMouseDevice->isActive()) {
         _keyboardMouseDevice->touchEndEvent(event);
     }
     if (_touchscreenDevice && _touchscreenDevice->isActive()) {
@@ -3471,7 +3703,7 @@ void Application::idle(float nsecsElapsed) {
     PROFILE_COUNTER_IF_CHANGED(app, "pendingDownloads", int, ResourceCache::getPendingRequestCount());
     PROFILE_COUNTER_IF_CHANGED(app, "currentProcessing", int, DependencyManager::get<StatTracker>()->getStat("Processing").toInt());
     PROFILE_COUNTER_IF_CHANGED(app, "pendingProcessing", int, DependencyManager::get<StatTracker>()->getStat("PendingProcessing").toInt());
-    auto renderConfig = _renderEngine->getConfiguration();
+  /*  auto renderConfig = _renderEngine->getConfiguration();
     PROFILE_COUNTER_IF_CHANGED(render, "gpuTime", float, (float)_gpuContext->getFrameTimerGPUAverage());
     PROFILE_COUNTER(render_detail, "gpuTimes", {
         { "OpaqueRangeTimer", renderConfig->getConfig("OpaqueRangeTimer")->property("gpuRunTime") },
@@ -3482,13 +3714,17 @@ void Application::idle(float nsecsElapsed) {
     });
 
     PROFILE_RANGE(app, __FUNCTION__);
+    */
 
+#ifndef ANDROID
     if (auto steamClient = PluginManager::getInstance()->getSteamClientPlugin()) {
         steamClient->runCallbacks();
     }
+#endif
 
     float secondsSinceLastUpdate = nsecsElapsed / NSECS_PER_MSEC / MSECS_PER_SECOND;
 
+/*
     // If the offscreen Ui has something active that is NOT the root, then assume it has keyboard focus.
     if (_keyboardDeviceHasFocus && offscreenUi && offscreenUi->getWindow()->activeFocusItem() != offscreenUi->getRootItem()) {
         _keyboardMouseDevice->pluginFocusOutEvent();
@@ -3496,6 +3732,7 @@ void Application::idle(float nsecsElapsed) {
     } else if (offscreenUi && offscreenUi->getWindow()->activeFocusItem() == offscreenUi->getRootItem()) {
         _keyboardDeviceHasFocus = true;
     }
+    */
 
     checkChangeCursor();
 
@@ -3814,9 +4051,11 @@ void Application::initDisplay() {
 
 void Application::init() {
     // Make sure Login state is up to date
+    qDebug() << "Application::init";
     DependencyManager::get<DialogsManager>()->toggleLoginDialog();
-
+    qDebug() << "DeferredLightingEffect::init";
     DependencyManager::get<DeferredLightingEffect>()->init();
+    qDebug() << "DeferredLightingEffect::init ok?";
 
     DependencyManager::get<AvatarManager>()->init();
     _myCamera.setMode(CAMERA_MODE_FIRST_PERSON);
@@ -3824,7 +4063,7 @@ void Application::init() {
     _timerStart.start();
     _lastTimeUpdated.start();
 
-
+#ifndef ANDROID 
     if (auto steamClient = PluginManager::getInstance()->getSteamClientPlugin()) {
         // when +connect_lobby in command line, join steam lobby
         const QString STEAM_LOBBY_COMMAND_LINE_KEY = "+connect_lobby";
@@ -3834,7 +4073,7 @@ void Application::init() {
             steamClient->joinLobby(lobbyId);
         }
     }
-
+#endif
 
     qCDebug(interfaceapp) << "Loaded settings";
 
@@ -4343,7 +4582,7 @@ void Application::update(float deltaTime) {
             inputPlugin->pluginUpdate(deltaTime, calibrationData);
         }
     }
-
+    //qDebug() << "handControllerPointer mappings deltaTime is " << deltaTime;
     userInputMapper->update(deltaTime);
 
     if (keyboardMousePlugin && keyboardMousePlugin->isActive()) {
@@ -5506,9 +5745,14 @@ void Application::registerScriptEngineWithApplicationServices(ScriptEngine* scri
     scriptEngine->registerGlobalObject("UserActivityLogger", DependencyManager::get<UserActivityLoggerScriptingInterface>().data());
     scriptEngine->registerGlobalObject("Users", DependencyManager::get<UsersScriptingInterface>().data());
 
+    scriptEngine->registerGlobalObject("App", this);
+    scriptEngine->registerFunction("App", "isAndroid", Application::isAndroid, 0);
+
+#ifndef ANDROID
     if (auto steamClient = PluginManager::getInstance()->getSteamClientPlugin()) {
         scriptEngine->registerGlobalObject("Steam", new SteamScriptingInterface(scriptEngine, steamClient.get()));
     }
+#endif
     auto scriptingInterface = DependencyManager::get<controller::ScriptingInterface>();
     scriptEngine->registerGlobalObject("Controller", scriptingInterface.data());
     UserInputMapper::registerControllerTypes(scriptEngine);
@@ -6348,6 +6592,7 @@ void Application::notifyPacketVersionMismatch() {
 }
 
 void Application::checkSkeleton() const {
+
     if (getMyAvatar()->getSkeletonModel()->isActive() && !getMyAvatar()->getSkeletonModel()->hasSkeleton()) {
         qCDebug(interfaceapp) << "MyAvatar model has no skeleton";
 
@@ -6356,6 +6601,7 @@ void Application::checkSkeleton() const {
 
         getMyAvatar()->useFullAvatarURL(AvatarData::defaultFullAvatarModelUrl(), DEFAULT_FULL_AVATAR_MODEL_NAME);
     } else {
+
         _physicsEngine->setCharacterController(getMyAvatar()->getCharacterController());
     }
 }
@@ -6766,7 +7012,11 @@ CompositorHelper& Application::getApplicationCompositor() const {
 // virtual functions required for PluginContainer
 ui::Menu* Application::getPrimaryMenu() {
     auto appMenu = _window->menuBar();
+#ifdef ANDROID
+    auto uiMenu = static_cast<ui::Menu*>(appMenu);
+#else 
     auto uiMenu = dynamic_cast<ui::Menu*>(appMenu);
+#endif 
     return uiMenu;
 }
 
@@ -6854,6 +7104,14 @@ void Application::updateThreadPoolCount() const {
     QThreadPool::globalInstance()->setMaxThreadCount(threadPoolSize);
 }
 
+QScriptValue Application::isAndroid(QScriptContext* context, QScriptEngine* engine) {
+    #ifdef ANDROID
+        return QScriptValue(engine, true);
+    #else
+        return QScriptValue(engine, false);
+    #endif
+}
+
 void Application::updateSystemTabletMode() {
     if (isHMDMode()) {
         DependencyManager::get<TabletScriptingInterface>()->setToolbarMode(getHmdTabletBecomesToolbarSetting());
@@ -6865,6 +7123,7 @@ void Application::updateSystemTabletMode() {
 void Application::toggleMuteAudio() {
     auto menu = Menu::getInstance();
     menu->setIsOptionChecked(MenuOption::MuteAudio, !menu->isOptionChecked(MenuOption::MuteAudio));
+
 }
 
 OverlayID Application::getTabletScreenID() const {
